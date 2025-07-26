@@ -1,311 +1,296 @@
 # Structured Language Modeling
 
-## Motivation
+A research framework for implementing language models with **progressive linguistic priors**, from simple baselines to complex regex and context-free grammar structures.
 
-Suppose we could write an algorithm that directly **synthesizes** a language model with an *a-priori* understanding of syntactic and semantic structure, instead of rediscovering those regularities from data.  
-Such a model would  
+## 🎯 Motivation
 
-1. remove much of the heavy empirical training loop (fewer GPU hours),  
-2. enforce language-first inductive biases in its latent state, and  
-3. arguably enable qualitatively different kinds of systematic reasoning than "enslopified" next-word predictors.  
+Suppose we could write an algorithm that directly **synthesizes** a language model with an *a-priori* understanding of syntactic and semantic structure, instead of rediscovering those regularities from data. Such a model would:
 
-The project goal is to embed as many *general linguistic priors* as possible **inside the architecture itself**.  
-We start with a non-prior baseline (mean pooling) and then progressively graft in convolution, recurrent nets, attention, *regular-expression* banks and finally *context-free-grammar* (CFG) structure.
+1. **Remove much of the heavy empirical training loop** (fewer GPU hours)
+2. **Enforce language-first inductive biases** in its latent state  
+3. **Enable qualitatively different kinds of systematic reasoning** than "enslopified" next-word predictors
 
-> "Language model'' here is used in the broad pre-2020 sense: *any* computational system that maps linguistic input to some representation—GOFAI, hypersymbolic, RNN, etc.
+The project goal is to embed as many *general linguistic priors* as possible **inside the architecture itself**. We start with a non-prior baseline (mean pooling) and then progressively graft in convolution, recurrent nets, attention, *regular-expression* banks and finally *context-free-grammar* (CFG) structure.
 
----
+## 🏗️ Architecture Overview
 
-## Input Processing
+The framework implements a progression of increasingly sophisticated linguistic priors:
 
-### Mean Pooling (baseline)
+| Model | Architecture | Linguistic Prior | Use Case |
+|-------|-------------|------------------|----------|
+| **Mean Pooling** | `Y = (1/L) * Σ X_t` | None (baseline) | Sanity check |
+| **Convolutional** | 1D CNN with multiple kernels | N-gram patterns | Local morphology |
+| **RNN/LSTM** | Recurrent networks | Sequential dependencies | Temporal structure |
+| **Multi-Head Attention** | Transformer layers | Long-range relationships | Global context |
+| **Regex** | Differentiable finite automata | Pattern matching | Structured text |
+| **CFG** | Probabilistic context-free grammars | Hierarchical syntax | Compositional structure |
 
-\[
-Y=\frac{1}{L}\sum_{t=1}^{L} X_t ,
-\]
-a sanity-check comparator.
+## 📦 Installation
 
-### Convolution (n-gram detector)
+### Using uv (Recommended)
 
-1-D convolution with kernel size \(k\) and stride \(s\):
-\[
-Y_i=\sigma\!\Bigl(\sum_{j=0}^{k-1} W_j\cdot X_{i\cdot s+j}+b\Bigr).
-\]
-Multiple filters \(F\) are concatenated.  Captures local morphology and word-order patterns.
+```bash
+# Clone the repository
+git clone https://github.com/JacobFV/structured-language-modeling.git
+cd structured-language-modeling
 
-### RNN
+# Install with uv
+uv sync
 
-\[
-h_t=\sigma(W_{hh}h_{t-1}+W_{xh}x_t+b_h),\qquad
-Y=h_L\ \text{or}\ \frac1L\sum_{t}h_t .
-\]
+# For development
+uv sync --extra dev
 
-### LSTM (long-range dependencies)
-
-Gated updates  
-\[
-\begin{aligned}
-f_t &=\sigma(W_f[h_{t-1},x_t]+b_f),\\
-i_t &=\sigma(W_i[h_{t-1},x_t]+b_i),\\
-o_t &=\sigma(W_o[h_{t-1},x_t]+b_o),\\
-\tilde C_t &=\tanh(W_C[h_{t-1},x_t]+b_C),\\[2pt]
-C_t &=f_t\odot C_{t-1}+i_t\odot\tilde C_t,\\
-h_t &=o_t\odot\tanh(C_t).
-\end{aligned}
-\]
-
-### Multi-head Attention
-
-Standard Transformer attention:
-\[
-\operatorname{MultiHead}(X)=\bigl[\operatorname{head}_1;\dots;\operatorname{head}_h\bigr]W^O,\qquad
-\operatorname{head}_i=\operatorname{softmax}\!\Bigl(\tfrac{QK^\top}{\sqrt{d_k}}\Bigr)V .
-\]
-
----
-
-## Regex  — *Finite-state priors*
-
-Let  
-• \(V=\{v_1,\dots,v_{N_v}\}\) be the alphabet,  
-• input sequence \(X=(x_1,\dots,x_L)\),  
-• a bank of \(D\) regular expressions \(\mathcal R=\{r_1,\dots,r_D\}\).  
-
-### Output interface
-
-For every \(r_d\) we return a *match score* \(s_d(X)\).  
-Stack them:
-\[
-Y=\bigl[s_1(X);\;s_2(X);\;\dots;\;s_D(X)\bigr]\in\mathbb R^{D}.
-\]
-
-### 1. Discrete optimisation ("directly tweaking the regex")
-
-Objective  
-\[
-\mathcal L(r_d)=
-\operatorname{median}_{X\in\mathcal D}\operatorname{LevDist}\bigl(X,\;\operatorname{Lang}(r_d)\bigr),
-\tag{1}
-\]
-where \(\operatorname{Lang}(r_d)\) is the language accepted by \(r_d\).
-
-Search strategies  
-
-1. **Beam-guided program synthesis** over the regex DSL  
-   – tokens = literals, `|`, concatenation, `*`, `+`, `?`, parentheses.  
-   – neighbourhood = single-token edits.  
-   – keep top-\(B\) candidates by the score \(-\mathcal L\).
-
-2. **Evolutionary algorithms**  
-   – population \(P\) of ASTs, mutation = token edit, crossover = subtree swap.  
-   – fitness = \(-\mathcal L-\lambda|r|\).
-
-3. **Reinforcement learning**  
-   – policy \(\pi_\theta\) generates token sequence; reward = \(-\mathcal L-\beta|r|\).  
-   – update via REINFORCE with entropy regularisation.
-
-These methods preserve *hard* symbolic semantics and allow strict constraints (e.g. POSIX compatibility, worst-case run-time bounds).
-
-### 2. Fully differentiable regex layer
-
-#### 2.1 Compilation to DFA-tensor
-
-Compile each \(r_d\) to a DFA \(\mathcal A^{(d)}=(Q^{(d)},V,\delta^{(d)},q_0^{(d)},F^{(d)})\).  
-Represent the transition function as a **log-probability tensor**
-
-\[
-T^{(d)}\in\mathbb R^{|Q^{(d)}|\times|Q^{(d)}|\times N_v},
-\quad
-T_{i,j,v}^{(d)}=
-\begin{cases}
-0   & \text{if } \delta^{(d)}(q_i,v)=q_j,\\
--\infty & \text{otherwise}.
-\end{cases}
-\]
-
-#### 2.2 Relaxation
-
-Turn \(T^{(d)}\) into *learnable* parameters \(A^{(d)}\):
-\[
-P^{(d)}*{i,j,v}=\operatorname{softmax}*{v}\bigl(A^{(d)}_{i,j,v}\bigr).
-\tag{2}
-\]
-
-#### 2.3 Forward pass (log-space WFSA)
-
-Initial state one-hot \(s_0=e_{q_0^{(d)}}\).  
-For \(t=1,\dots,L\):
-\[
-s_t=\operatorname{softmax}\!\Bigl(
-\log P^{(d)}[:,:,x_t]\;+\;\log s_{t-1}
-\Bigr).
-\tag{3}
-\]
-Acceptance probability  
-\[
-s_d(X)=\sigma\bigl(w^{(d)\top}s_L\bigr),
-\qquad
-w^{(d)}=\sum_{q\in F^{(d)}} e_q .
-\]
-
-All operations are batched; merging the \(D\) DFAs into one block-diagonal tensor allows GPU kernels with time \(O\bigl(L\,\sum_d |Q^{(d)}|^2\bigr)\).
-
-#### 2.4 Training signals  
-
-If labelled ⇢ cross-entropy on \(s_d\); unlabeled ⇢ contrastive or self-supervised objectives.  
-Regularise by KL\((P^{(d)}\Vert T^{(d)})\) to keep transitions sparse.  
-Optionally perform periodic "snap-back" → project each \(\arg\max_v P_{i,j,v}\) to 1, others 0.
-
-#### 2.5 Smooth Levenshtein distance alternative  
-
-Dynamic-time-warping recurrence
-\[
-\widetilde D_{i,j}=\operatorname{LSE}*\tau
-\begin{cases}
-\widetilde D*{i-1,j-1}+c_{\text{sub}},\\
-\widetilde D_{i-1,j  }+c_{\text{del}},\\
-\widetilde D_{i  ,j-1}+c_{\text{ins}},
-\end{cases}
-\]
-temperature \(\tau\) gives differentiability; back-prop updates literal embeddings of the regex bank rather than structure.
-
----
-
-## CFG  — *Context-free priors*
-
-Let  
-• non-terminals \(N=\{A_1,\dots,A_{N_{NT}}\}\), terminal set \(V\) as before.  
-We parameterise a **probabilistic CFG (PCFG)**.
-
-### 1. Rule tensors
-
-Terminal (unary) rules  
-\[
-R_1\in\mathbb R^{N_{NT}\times N_v},\qquad
-R_1[A,v]=\log P(A\to v).
-\]
-
-Binary rules  
-\[
-R_2\in\mathbb R^{N_{NT}\times N_{NT}\times N_{NT}},\qquad
-R_2[A,B,C]=\log P(A\to BC).
-\]
-Row-wise log-softmax ensures valid probabilities.
-
-### 2. Inside algorithm (tensor form)
-
-Create chart \(\alpha\in\mathbb R^{L\times L\times N_{NT}}\).
-
-Initialisation (\(\ell=1\)):
-\[
-\alpha_{i,i+1,:}=R_1[:,x_i].
-\tag{5}
-\]
-
-Recursion for span length \(\ell=2,\dots,L\):
-\[
-\alpha_{i,j,:}=
-\operatorname{LSE}*{k=i+1}^{j-1}
-\operatorname{LSE}*{B,C}
-\bigl(R_2[:,B,C]+\alpha_{i,k,B}+\alpha_{k,j,C}\bigr).
-\tag{6}
-\]
-
-Implementation sketch (PyTorch)
-
-```python
-for span in range(2, L+1):
-    left  = alpha[:, :L-span, :, None]          # (B, L-span, NT, 1)
-    right = alpha[:, span:, None, :]            # (B, L-span, 1, NT)
-    tmp   = left + right                       # broadcasting k dimension
-    score = tmp[None] + R2[:, None, None]      # add rule scores
-    alpha[:, :L-span, :] = logsumexp(score, dim=(0,3,4))
+# For full features (including spaCy)
+uv sync --extra full
 ```
 
-Complexity \(O(L^3N_{NT}^2)\) yet GPU-friendly; with \(N_{NT}\le 64\) and \(L\le 64\) parses in milliseconds.
+### Using pip
 
-Sentence likelihood  
-\[
-\log p(X)=\alpha_{0,L,S},\quad S\text{ = start symbol}.
-\]
+```bash
+pip install -e .
 
-### 3. Learning
+# For development
+pip install -e ".[dev]"
+```
 
-Losses  
-• *Unsupervised* = \(-\log p(X)\).  
-• *Supervised* (gold parse \(T^\star\))  
-  \[
-  \mathcal L=-\sum_{\text{rules }r\in T^\star}\log P(r).
-  \]
-Gradients flow through the inside chart; auto-diff reproduces inside–outside EM but allows mini-batch SGD.
+## 🚀 Quick Start
 
-### 4. Deterministic LL(k) option
+### Training a Model
 
-LL(k) grammars can be encoded by a **differentiable push-down automaton (PDA)**:
+```bash
+# Train a convolutional model on sentiment analysis
+uv run slm-train --model ConvolutionalModel --dataset sst2 --epochs 3
 
-Stack representation \(S_t\in\mathbb R^{d_{\text{depth}}\times d_{\text{vec}}}\).  
-Controller RNN emits logits for *push*, *pop*, *replace*, relaxed via Gumbel-Softmax.  
-Predictive table \(\Pi\in\mathbb R^{N_{NT}\times N_v^{\,k}\times N_{\text{action}}}\) is learnable.  
-Hard stack behaviour can be recovered with straight-through estimation.
+# Train with custom configuration
+uv run slm-train --config configs/default.yaml --model LSTMModel --dataset imdb
 
-### 5. Feature read-outs
+# Train with Weights & Biases logging
+uv run slm-train --model MultiHeadAttentionModel --dataset cola --wandb
+```
 
-1. Root distribution \(\alpha_{0,L,:}\)  →  vector embedding.  
-2. Expected rule counts \(E[\text{freq}(A\!\to\!BC|X)]\) via automatic differentiation.  
-3. Viterbi tree (argmax in Eq. 6) → encode using tree-LSTM.
+### Evaluating Models
+
+```bash
+# Evaluate a trained model
+uv run slm-evaluate --model-path ./outputs/final_model.pt
+
+# Quick evaluation on subset of datasets
+uv run slm-evaluate --datasets sst2 imdb --max-samples 1000
+
+# Evaluate on specific datasets
+uv run slm-evaluate --datasets ptb_lm wikitext2_lm
+```
+
+### Comparing Architectures
+
+```bash
+# Compare multiple model architectures
+uv run slm-compare --models MeanPoolingModel ConvolutionalModel LSTMModel
+
+# Quick comparison on smaller datasets
+uv run slm-compare --max-samples 500 --datasets sst2 cola
+
+# List available models
+uv run slm-compare --list-models
+```
+
+## 📊 Evaluation Suite
+
+The framework implements a comprehensive **20-task evaluation suite** across 6 categories:
+
+### A. Next-Word Prediction
+- **PTB, WikiText-2/103**: Language modeling (perplexity)
+- **enwik8**: Character-level modeling
+- **LAMBADA**: Discourse coherence  
+- **Linzen Agreement**: Subject-verb dependencies
+
+### B. Sequence Classification
+- **SST-2, IMDB**: Sentiment analysis
+- **AG News, DBPedia**: Topic classification
+- **CoLA**: Acceptability judgments
+
+### C. Sequence Labeling  
+- **PTB POS**: Part-of-speech tagging
+- **CoNLL-2003 NER**: Named entity recognition
+- **CoNLL-2000**: Chunking
+
+### D. Structured Prediction
+- **PTB Parsing**: Constituency parsing
+- **UD Parsing**: Dependency parsing  
+- **IWSLT/WMT Translation**: Machine translation
+- **WikiSQL, ATIS**: Semantic parsing
+
+### E. Pattern/Grammar Tasks
+- **Tomita Grammars**: Finite-state recognition
+- **ListOps**: Hierarchical reasoning
+- **Math Expressions**: Arithmetic parsing
+- **CFQ**: Compositional generalization
+
+### F. Reasoning/Inference
+- **SNLI, MultiNLI**: Natural language inference
+- **SQuAD**: Reading comprehension
+
+## 🧪 Model Architectures
+
+### Basic Models (Ready to Use)
+
+```python
+from slm.utils.model_factory import create_model
+from slm.utils.config import get_default_config
+
+config = get_default_config()
+
+# Mean pooling baseline
+config.model.type = "MeanPoolingModel"
+model = create_model(config.model)
+
+# CNN for n-gram patterns  
+config.model.type = "ConvolutionalModel"
+config.model.num_filters = 100
+config.model.kernel_sizes = [2, 3, 4, 5]
+model = create_model(config.model)
+
+# RNN/LSTM for sequential processing
+config.model.type = "LSTMModel" 
+config.model.hidden_dim = 256
+config.model.bidirectional = True
+model = create_model(config.model)
+
+# Transformer with multi-head attention
+config.model.type = "MultiHeadAttentionModel"
+config.model.num_heads = 8
+config.model.num_layers = 6
+model = create_model(config.model)
+```
+
+## 📁 Project Structure
+
+```
+structured-language-modeling/
+├── src/slm/
+│   ├── models/           # Model architectures
+│   │   ├── base.py       # Abstract base model
+│   │   ├── baseline.py   # Mean pooling
+│   │   ├── conv.py       # CNN models
+│   │   ├── rnn.py        # RNN/LSTM models
+│   │   ├── attention.py  # Transformer models
+│   │   ├── regex.py      # Regex models (placeholder)
+│   │   └── cfg.py        # CFG models (placeholder)
+│   ├── data/             # Data loading and processing
+│   ├── training/         # Training infrastructure
+│   ├── evaluation/       # Evaluation framework
+│   ├── utils/            # Utilities and configuration
+│   └── scripts/          # CLI entry points
+├── configs/              # Configuration files
+├── scripts/              # Legacy CLI scripts
+└── pyproject.toml        # Project configuration
+```
+
+## ⚙️ Configuration
+
+The framework uses [OmegaConf](https://omegaconf.readthedocs.io/) for configuration management. See `configs/default.yaml` for the default configuration.
+
+### Key Configuration Sections
+
+```yaml
+model:
+  type: "ConvolutionalModel"  # Model architecture
+  embed_dim: 256              # Embedding dimension
+  output_dim: 128             # Output dimension
+
+data:
+  dataset_name: "sst2"        # Dataset to use
+  batch_size: 32              # Training batch size
+  max_length: 128             # Maximum sequence length
+
+training:
+  num_epochs: 3               # Training epochs
+  learning_rate: 5e-4         # Learning rate
+  optimizer: "adamw"          # Optimizer type
+  scheduler: "warmup_cosine"  # LR scheduler
+
+evaluation:
+  datasets: ["sst2", "imdb"] # Evaluation datasets
+  max_samples: null          # Max samples (null = all)
+```
+
+## 🧬 Research Framework
+
+This framework is designed for systematic research on linguistic priors in neural architectures. Key research directions:
+
+### Encoder Swap Experiments
+Keep downstream tasks identical, swap the encoder architecture, compare performance under identical training conditions.
+
+### Sample Efficiency Analysis  
+Measure performance gains from built-in priors across different training data sizes (1%, 10%, 100%).
+
+### Symbolic Prior Ablations
+Compare discrete vs. relaxed vs. removed symbolic components (regex/CFG) to quantify the contribution of each linguistic prior.
+
+### Generalization Stress Tests
+- Zero-shot splits in CFQ
+- Length extrapolation in ListOps  
+- Long-distance dependencies in Linzen agreement
+
+## 🛠️ Development
+
+### Setting up Development Environment
+
+```bash
+# Clone and install in development mode
+git clone https://github.com/JacobFV/structured-language-modeling.git
+cd structured-language-modeling
+uv sync --extra dev
+
+# Run tests
+uv run pytest
+
+# Format code
+uv run black src/
+uv run isort src/
+
+# Type checking
+uv run mypy src/
+```
+
+### Contributing
+
+1. Fork the repository
+2. Create a feature branch (`git checkout -b feature/amazing-feature`)
+3. Make your changes
+4. Add tests for new functionality
+5. Run the test suite (`uv run pytest`)
+6. Format your code (`uv run black . && uv run isort .`)
+7. Commit your changes (`git commit -m 'Add amazing feature'`)
+8. Push to the branch (`git push origin feature/amazing-feature`)
+9. Open a Pull Request
+
+## 📝 Citation
+
+If you use this framework in your research, please cite:
+
+```bibtex
+@misc{structured-language-modeling,
+  title={Structured Language Modeling: Progressive Linguistic Priors for Neural Architectures},
+  author={Jacob Valdez},
+  year={2024},
+  url={https://github.com/JacobFV/structured-language-modeling}
+}
+```
+
+## 📄 License
+
+This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
+
+## 🤝 Acknowledgments
+
+- Built on top of [PyTorch](https://pytorch.org/) and [Transformers](https://huggingface.co/transformers/)
+- Evaluation datasets from [Hugging Face Datasets](https://huggingface.co/datasets)
+- Configuration management with [OmegaConf](https://omegaconf.readthedocs.io/)
+- Dependency management with [uv](https://github.com/astral-sh/uv)
 
 ---
 
-## Generation
+**Framework Status**: 🚧 **Research** - Core architectures implemented, symbolic models (Regex/CFG) are research prototypes
 
-For generation we invert the parsing layers:
-
-0. Raw logits (baseline). Sample from logits directly outputted by the LLM. (Current convention)
-1. Regex-weighted logits: sample DFA paths with probability proportional to \(P^{(d)}\), convert to strings.
-2. PCFG-wieghted logits: ditto
-3. Mixture of priors: LLM outputs all three p_raw, p_re, p_pcfg and mixing coefficients (beta \leftarrow softmax(c_re, c_pcfg)) for each token
-
----
-
-### Evaluation Task Suite
-
-| # | Task Family | Concrete Task (Metric) | Suggested Dataset(s) | Main Input Bias Probed |
-|---|-------------|------------------------|----------------------|------------------------|
-| 1 | A. Next-Word Prediction | Token-level LM (perplexity) | Penn Treebank (PTB), WikiText-2 (medium), WikiText-103 (large) | All; baseline comparison |
-| 2 |              | Character-level LM | enwik8 | Regex/CNN (character n-grams) |
-| 3 |              | Cloze completion for discourse coherence | LAMBADA | Attention, long-range RNN |
-| 4 |              | Subject–verb agreement LM accuracy (Linzen et al.) | Linzen 2016 agreement set | CFG/LSTM bias toward long dependency |
-| 5 | B. Sequence-Level Classification | Sentiment (accuracy) | SST-2 (small), IMDB (large) | CNN (local phrases) vs hierarchical (CFG) |
-| 6 |              | Topic classification | AG News, DBPedia | Mean-pool vs CNN |
-| 7 |              | Acceptability judgements | CoLA | CFG bias (grammar well-formedness) |
-| 8 | C. Sequence Labelling | POS tagging (token F1) | PTB POS split, Universal Dependencies | RNN/LSTM; regex feature ablation |
-| 9 |              | Named Entity Recognition | CoNLL-2003, OntoNotes 5.0 | CNN+regex for orthography, attention for context |
-|10 |              | Shallow chunking | CoNLL-2000 | Regex/CNN (phrase boundary cues) |
-|11 | D. Structured Prediction | Constituency parsing (exact match) | PTB §23, Berkeley Neural Parser splits | CFG module most critical |
-|12 |              | Dependency parsing (LAS/UAS) | UD English-EWT | LSTM/attention long links |
-|13 |              | Machine translation (BLEU) | IWSLT14 En–De (small), WMT14 En–De (large) | Attention; regex for sub-word patterns |
-|14 |              | Semantic parsing (exact set match) | WikiSQL, ATIS | CFG/regex (formal grammar) |
-|15 | E. Pattern / Grammar | Tomita grammars classification | Synthetic Tomita dataset | Regex layer (finite-state) |
-|16 |              | Parentheses-matching / counting | ListOps (accuracy) | CFG layer (hierarchy depth) |
-|17 |              | Arithmetic expression evaluation | PCFG-generated MathExpr | CFG; long-range attention |
-|18 |              | CFQ (generalisation to new compositions) | Google CFQ | CFG; compositional generalisation |
-|19 | F. Reasoning / Inference | Natural Language Inference (accuracy) | SNLI (small), MultiNLI, ANLI | Attention + CFG semantics |
-|20 |              | Extractive QA (F1/Exact-Match) | SQuAD 1.1 / 2.0 | Attention; regex for span start/end |
-
-### How to Use the Suite
-
-1. **Encoder swap experiment**  
-   Keep the downstream head identical, plug each input-processing layer as encoder, train under identical hyper-parameters, then report the above metrics.
-
-2. **Ablation for symbolic priors**  
-   For regex/CFG modules run *hard* (discrete) vs *soft* (relaxed) vs *removed* settings; measure delta-performance on tasks #11, #15–18.
-
-3. **Sample efficiency curves**  
-   Evaluate each model on 1 %, 10 %, 100 % of training data for tasks #1, #5, #11 to quantify gains from built-in priors.
-
-4. **Generalisation stress tests**  
-   • Zero-shot split in CFQ, ListOps length extrapolation, Linzen long-sentence subset.  
-   • Compare perplexity/accuracy degradation as sequence length grows.
-
-5. **Compute budget**  
-   Provide FLOPs and wall-time for each encoder on PTB (#1) and ListOps (#16) to verify that symbolic priors can sometimes *reduce* training cost.
+For questions, issues, or contributions, please visit our [GitHub repository](https://github.com/JacobFV/structured-language-modeling).

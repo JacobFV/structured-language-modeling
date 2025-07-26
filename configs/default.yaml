@@ -1,0 +1,40 @@
+# Default configuration for Structured Language Modeling experiments
+
+model:
+  type: "MeanPoolingModel"  # Model architecture to use
+  vocab_size: 30522  # BERT vocabulary size
+  embed_dim: 256     # Embedding dimension
+  output_dim: 128    # Output dimension
+  dropout: 0.1       # Dropout rate
+
+data:
+  dataset_name: "sst2"           # Dataset to use
+  tokenizer_name: "bert-base-uncased"
+  max_length: 128                # Maximum sequence length
+  batch_size: 32                 # Batch size
+  cache_dir: "./cache"           # Cache directory for datasets
+
+training:
+  num_epochs: 3                  # Number of training epochs
+  learning_rate: 5e-4            # Learning rate
+  weight_decay: 0.01             # Weight decay
+  optimizer: "adamw"             # Optimizer type
+  scheduler: "warmup_cosine"     # Learning rate scheduler
+  max_grad_norm: 1.0             # Gradient clipping threshold
+  eval_steps: 500                # Steps between evaluations
+  save_steps: 1000               # Steps between checkpoint saves
+  logging_steps: 100             # Steps between logging
+  output_dir: "./outputs"        # Output directory
+
+evaluation:
+  datasets: ["sst2", "imdb", "ag_news", "cola"]  # Datasets for evaluation
+  batch_size: 32                 # Evaluation batch size
+  max_samples: null              # Maximum samples per dataset (null = all)
+
+logging:
+  use_wandb: false               # Whether to use Weights & Biases
+  project: "slm-experiments"     # W&B project name
+  log_level: "INFO"              # Logging level
+
+device: "auto"                   # Device: auto, cpu, cuda
+seed: 42                         # Random seed for reproducibility 
