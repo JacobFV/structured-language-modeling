@@ -260,27 +260,52 @@ Hard stack behaviour can be recovered with straight-through estimation.
 
 For generation we invert the parsing layers:
 
-1. **Regex bank**: sample DFA paths with probability proportional to \(P^{(d)}\), convert to strings.  
-2. **PCFG**: ancestral sampling—top-down draw rules until only terminals remain.  
-3. Mix backbone (attention / RNN) logits with symbolic priors:  
-   \[
-   \log P_{\text{final}} = \lambda_{\text{sym}}\log P_{\text{PCFG}} + (1-\lambda_{\text{sym}})\log P_{\text{neural}}.
-   \]
+0. Raw logits (baseline). Sample from logits directly outputted by the LLM. (Current convention)
+1. Regex-weighted logits: sample DFA paths with probability proportional to \(P^{(d)}\), convert to strings.
+2. PCFG-wieghted logits: ditto
+3. Mixture of priors: LLM outputs all three p_raw, p_re, p_pcfg and mixing coefficients (beta \leftarrow softmax(c_re, c_pcfg)) for each token
 
 ---
 
-## Thought
+### Evaluation Task Suite
 
-An explicit "thought vector'' can be the concatenation
+| # | Task Family | Concrete Task (Metric) | Suggested Dataset(s) | Main Input Bias Probed |
+|---|-------------|------------------------|----------------------|------------------------|
+| 1 | A. Next-Word Prediction | Token-level LM (perplexity) | Penn Treebank (PTB), WikiText-2 (medium), WikiText-103 (large) | All; baseline comparison |
+| 2 |              | Character-level LM | enwik8 | Regex/CNN (character n-grams) |
+| 3 |              | Cloze completion for discourse coherence | LAMBADA | Attention, long-range RNN |
+| 4 |              | Subject–verb agreement LM accuracy (Linzen et al.) | Linzen 2016 agreement set | CFG/LSTM bias toward long dependency |
+| 5 | B. Sequence-Level Classification | Sentiment (accuracy) | SST-2 (small), IMDB (large) | CNN (local phrases) vs hierarchical (CFG) |
+| 6 |              | Topic classification | AG News, DBPedia | Mean-pool vs CNN |
+| 7 |              | Acceptability judgements | CoLA | CFG bias (grammar well-formedness) |
+| 8 | C. Sequence Labelling | POS tagging (token F1) | PTB POS split, Universal Dependencies | RNN/LSTM; regex feature ablation |
+| 9 |              | Named Entity Recognition | CoNLL-2003, OntoNotes 5.0 | CNN+regex for orthography, attention for context |
+|10 |              | Shallow chunking | CoNLL-2000 | Regex/CNN (phrase boundary cues) |
+|11 | D. Structured Prediction | Constituency parsing (exact match) | PTB §23, Berkeley Neural Parser splits | CFG module most critical |
+|12 |              | Dependency parsing (LAS/UAS) | UD English-EWT | LSTM/attention long links |
+|13 |              | Machine translation (BLEU) | IWSLT14 En–De (small), WMT14 En–De (large) | Attention; regex for sub-word patterns |
+|14 |              | Semantic parsing (exact set match) | WikiSQL, ATIS | CFG/regex (formal grammar) |
+|15 | E. Pattern / Grammar | Tomita grammars classification | Synthetic Tomita dataset | Regex layer (finite-state) |
+|16 |              | Parentheses-matching / counting | ListOps (accuracy) | CFG layer (hierarchy depth) |
+|17 |              | Arithmetic expression evaluation | PCFG-generated MathExpr | CFG; long-range attention |
+|18 |              | CFQ (generalisation to new compositions) | Google CFQ | CFG; compositional generalisation |
+|19 | F. Reasoning / Inference | Natural Language Inference (accuracy) | SNLI (small), MultiNLI, ANLI | Attention + CFG semantics |
+|20 |              | Extractive QA (F1/Exact-Match) | SQuAD 1.1 / 2.0 | Attention; regex for span start/end |
 
-\[
-\text{Think}(X)=
-\bigl[
-\alpha_{0,L,:}\ ;\ Y_{\text{regex}}\ ;\ h_L^{\text{LSTM}}\ ;\ \text{CLS}^{\text{attention}}
-\bigr],
-\]
-feeding downstream reasoning modules (symbolic planner, theorem prover, etc.).
+### How to Use the Suite
 
----
+1. **Encoder swap experiment**  
+   Keep the downstream head identical, plug each input-processing layer as encoder, train under identical hyper-parameters, then report the above metrics.
 
-## Interaction
+2. **Ablation for symbolic priors**  
+   For regex/CFG modules run *hard* (discrete) vs *soft* (relaxed) vs *removed* settings; measure delta-performance on tasks #11, #15–18.
+
+3. **Sample efficiency curves**  
+   Evaluate each model on 1 %, 10 %, 100 % of training data for tasks #1, #5, #11 to quantify gains from built-in priors.
+
+4. **Generalisation stress tests**  
+   • Zero-shot split in CFQ, ListOps length extrapolation, Linzen long-sentence subset.  
+   • Compare perplexity/accuracy degradation as sequence length grows.
+
+5. **Compute budget**  
+   Provide FLOPs and wall-time for each encoder on PTB (#1) and ListOps (#16) to verify that symbolic priors can sometimes *reduce* training cost.
