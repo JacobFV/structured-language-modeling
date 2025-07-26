@@ -1,178 +1,286 @@
-# Sturctured Language Modeling
+# Structured Language Modeling
 
 ## Motivation
 
-Suppose we could write an algorithm that directly *synthesized* a language model with an understanding of syntactic and semantic structures without having to train on data? Such an algorithm would not be much more computationally efficinet, avoiding needlessly extracting already known structures of language from data, but it would also have fundamentally language-first latent structure and dynamics which would likely enable it to think more creatively than enslopified artifacts that next-word prediction produces.
+Suppose we could write an algorithm that directly **synthesizes** a language model with an *a-priori* understanding of syntactic and semantic structure, instead of rediscovering those regularities from data.  
+Such a model would  
 
-How could we synthesize such a model? By introducing language biases into the architecture itself. In this project, we are giong to try to add as many general priors of language as we can. We will start with the non-prior baseline implementation, then to regex, then try more advanced.
+1. remove much of the heavy empirical training loop (fewer GPU hours),  
+2. enforce language-first inductive biases in its latent state, and  
+3. arguably enable qualitatively different kinds of systematic reasoning than "enslopified" next-word predictors.  
 
-Note: we use the term "language model" here in iits pre-22023-crazed understanding as just *any* model of language. It could be GOFAI, hypersymbolic, RNN, etc. anything.
+The project goal is to embed as many *general linguistic priors* as possible **inside the architecture itself**.  
+We start with a non-prior baseline (mean pooling) and then progressively graft in convolution, recurrent nets, attention, *regular-expression* banks and finally *context-free-grammar* (CFG) structure.
 
-## Input processing
+> "Language model'' here is used in the broad pre-2020 sense: *any* computational system that maps linguistic input to some representation—GOFAI, hypersymbolic, RNN, etc.
 
-Here we do various seq -> output experiments that determine how useful various input processing algorithms are.
+---
+
+## Input Processing
 
 ### Mean Pooling (baseline)
 
-Simple averaging of input embeddings, serving as a baseline comparison.
+\[
+Y=\frac{1}{L}\sum_{t=1}^{L} X_t ,
+\]
+a sanity-check comparator.
 
-Y = \Sum(X) / L
+### Convolution (n-gram detector)
 
-where:
-
-- X = input
-- Y = output
-- L = length of input sequence
-
-### Convolution 
-
-Sliding window pattern detection using learned filters. Each filter applies a learnable kernel across the input sequence to detect local patterns and linguistic features.
-
-For a 1D convolution with kernel size k and stride s:
-
-Y_i = σ(∑_{j=0}^{k-1} W_j · X_{i·s+j} + b)
-
-where:
-- X = input sequence of length L
-- Y = output feature map
-- W = learnable filter weights of size k
-- b = bias term
-- σ = activation function (typically ReLU or tanh)
-- i = output position index
-
-Multiple filters (F total) can be applied in parallel to capture different patterns:
-
-Y = [conv(X, W_0); conv(X, W_1); ...; conv(X, W_{F-1})]
-
-The convolution operation preserves local sequential structure while reducing dimensionality and extracting position-invariant features relevant to language patterns such as n-grams, morphological structures, and syntactic dependencies.
+1-D convolution with kernel size \(k\) and stride \(s\):
+\[
+Y_i=\sigma\!\Bigl(\sum_{j=0}^{k-1} W_j\cdot X_{i\cdot s+j}+b\Bigr).
+\]
+Multiple filters \(F\) are concatenated.  Captures local morphology and word-order patterns.
 
 ### RNN
 
-Sequential processing with hidden state updates that maintain memory of previous inputs through recurrent connections.
+\[
+h_t=\sigma(W_{hh}h_{t-1}+W_{xh}x_t+b_h),\qquad
+Y=h_L\ \text{or}\ \frac1L\sum_{t}h_t .
+\]
 
-The basic RNN computes:
+### LSTM (long-range dependencies)
 
-h_t = σ(W_{hh} h_{t-1} + W_{xh} x_t + b_h)
-y_t = W_{hy} h_t + b_y
+Gated updates  
+\[
+\begin{aligned}
+f_t &=\sigma(W_f[h_{t-1},x_t]+b_f),\\
+i_t &=\sigma(W_i[h_{t-1},x_t]+b_i),\\
+o_t &=\sigma(W_o[h_{t-1},x_t]+b_o),\\
+\tilde C_t &=\tanh(W_C[h_{t-1},x_t]+b_C),\\[2pt]
+C_t &=f_t\odot C_{t-1}+i_t\odot\tilde C_t,\\
+h_t &=o_t\odot\tanh(C_t).
+\end{aligned}
+\]
 
-where:
-- x_t = input at time step t
-- h_t = hidden state at time step t
-- h_0 = initial hidden state (typically zeros)
-- W_{hh} = hidden-to-hidden weight matrix
-- W_{xh} = input-to-hidden weight matrix  
-- W_{hy} = hidden-to-output weight matrix
-- b_h, b_y = bias vectors
-- σ = activation function (typically tanh)
+### Multi-head Attention
 
-For sequence processing, the final output is typically:
+Standard Transformer attention:
+\[
+\operatorname{MultiHead}(X)=\bigl[\operatorname{head}_1;\dots;\operatorname{head}_h\bigr]W^O,\qquad
+\operatorname{head}_i=\operatorname{softmax}\!\Bigl(\tfrac{QK^\top}{\sqrt{d_k}}\Bigr)V .
+\]
 
-Y = h_L or Y = mean([h_1, h_2, ..., h_L])
+---
 
-RNNs can theoretically model arbitrary sequential dependencies but suffer from vanishing gradients for long sequences, limiting their ability to capture long-range linguistic dependencies.
+## Regex  — *Finite-state priors*
 
-### LSTM
+Let  
+• \(V=\{v_1,\dots,v_{N_v}\}\) be the alphabet,  
+• input sequence \(X=(x_1,\dots,x_L)\),  
+• a bank of \(D\) regular expressions \(\mathcal R=\{r_1,\dots,r_D\}\).  
 
-Long-term dependency modeling with gated memory cells that selectively retain, forget, and update information across time steps.
+### Output interface
 
-The LSTM uses three gates to control information flow:
+For every \(r_d\) we return a *match score* \(s_d(X)\).  
+Stack them:
+\[
+Y=\bigl[s_1(X);\;s_2(X);\;\dots;\;s_D(X)\bigr]\in\mathbb R^{D}.
+\]
 
-Forget gate: f_t = σ(W_f · [h_{t-1}, x_t] + b_f)
-Input gate: i_t = σ(W_i · [h_{t-1}, x_t] + b_i)
-Output gate: o_t = σ(W_o · [h_{t-1}, x_t] + b_o)
+### 1. Discrete optimisation ("directly tweaking the regex")
 
-Cell state update:
-C̃_t = tanh(W_C · [h_{t-1}, x_t] + b_C)
-C_t = f_t ∗ C_{t-1} + i_t ∗ C̃_t
+Objective  
+\[
+\mathcal L(r_d)=
+\operatorname{median}_{X\in\mathcal D}\operatorname{LevDist}\bigl(X,\;\operatorname{Lang}(r_d)\bigr),
+\tag{1}
+\]
+where \(\operatorname{Lang}(r_d)\) is the language accepted by \(r_d\).
 
-Hidden state:
-h_t = o_t ∗ tanh(C_t)
+Search strategies  
 
-where:
-- ∗ denotes element-wise multiplication
-- [h_{t-1}, x_t] is vector concatenation
-- C_t = cell state (long-term memory)
-- h_t = hidden state (short-term memory)
-- W_f, W_i, W_o, W_C = learned weight matrices
-- b_f, b_i, b_o, b_C = bias vectors
+1. **Beam-guided program synthesis** over the regex DSL  
+   – tokens = literals, `|`, concatenation, `*`, `+`, `?`, parentheses.  
+   – neighbourhood = single-token edits.  
+   – keep top-\(B\) candidates by the score \(-\mathcal L\).
 
-The final sequence representation is Y = h_L or a function of all hidden states. LSTMs excel at capturing long-range dependencies crucial for understanding complex syntactic structures and semantic relationships in language.
+2. **Evolutionary algorithms**  
+   – population \(P\) of ASTs, mutation = token edit, crossover = subtree swap.  
+   – fitness = \(-\mathcal L-\lambda|r|\).
 
-### Multi-head attention
+3. **Reinforcement learning**  
+   – policy \(\pi_\theta\) generates token sequence; reward = \(-\mathcal L-\beta|r|\).  
+   – update via REINFORCE with entropy regularisation.
 
-Parallel computation of weighted relationships between sequence elements, allowing the model to attend to different representational subspaces simultaneously.
+These methods preserve *hard* symbolic semantics and allow strict constraints (e.g. POSIX compatibility, worst-case run-time bounds).
 
-For h attention heads, each head computes:
+### 2. Fully differentiable regex layer
 
-Attention(Q, K, V) = softmax(QK^T / √d_k)V
+#### 2.1 Compilation to DFA-tensor
 
-where:
-- Q = queries = XW^Q_i (d_model × d_k)
-- K = keys = XW^K_i (d_model × d_k)  
-- V = values = XW^V_i (d_model × d_v)
-- d_k = d_v = d_model / h (dimension per head)
-- W^Q_i, W^K_i, W^V_i = learned projection matrices
+Compile each \(r_d\) to a DFA \(\mathcal A^{(d)}=(Q^{(d)},V,\delta^{(d)},q_0^{(d)},F^{(d)})\).  
+Represent the transition function as a **log-probability tensor**
 
-Multi-head attention combines all heads:
+\[
+T^{(d)}\in\mathbb R^{|Q^{(d)}|\times|Q^{(d)}|\times N_v},
+\quad
+T_{i,j,v}^{(d)}=
+\begin{cases}
+0   & \text{if } \delta^{(d)}(q_i,v)=q_j,\\
+-\infty & \text{otherwise}.
+\end{cases}
+\]
 
-MultiHead(X) = Concat(head_1, ..., head_h)W^O
+#### 2.2 Relaxation
 
-where:
-- head_i = Attention(XW^Q_i, XW^K_i, XW^V_i)
-- W^O = output projection matrix (d_model × d_model)
+Turn \(T^{(d)}\) into *learnable* parameters \(A^{(d)}\):
+\[
+P^{(d)}*{i,j,v}=\operatorname{softmax}*{v}\bigl(A^{(d)}_{i,j,v}\bigr).
+\tag{2}
+\]
 
-The final output for sequence classification is typically:
+#### 2.3 Forward pass (log-space WFSA)
 
-Y = mean(MultiHead(X)) or Y = MultiHead(X)[0] (using CLS token)
+Initial state one-hot \(s_0=e_{q_0^{(d)}}\).  
+For \(t=1,\dots,L\):
+\[
+s_t=\operatorname{softmax}\!\Bigl(
+\log P^{(d)}[:,:,x_t]\;+\;\log s_{t-1}
+\Bigr).
+\tag{3}
+\]
+Acceptance probability  
+\[
+s_d(X)=\sigma\bigl(w^{(d)\top}s_L\bigr),
+\qquad
+w^{(d)}=\sum_{q\in F^{(d)}} e_q .
+\]
 
-Multi-head attention enables the model to simultaneously focus on different aspects of linguistic structure: syntactic relationships, semantic similarity, positional patterns, and long-range dependencies without the sequential bottleneck of RNNs.
+All operations are batched; merging the \(D\) DFAs into one block-diagonal tensor allows GPU kernels with time \(O\bigl(L\,\sum_d |Q^{(d)}|^2\bigr)\).
 
-### Regex
+#### 2.4 Training signals  
 
-We apply a set of D unique regular expressions to analyze the input sequence. For each regex pattern and each position in the sequence, we compute a "match distance" - an integer measuring how close that segment is to matching the pattern. A distance of 0 indicates a perfect match, while larger values represent the minimum number of character edits (insertions, deletions, or substitutions) required to match the pattern.
+If labelled ⇢ cross-entropy on \(s_d\); unlabeled ⇢ contrastive or self-supervised objectives.  
+Regularise by KL\((P^{(d)}\Vert T^{(d)})\) to keep transitions sparse.  
+Optionally perform periodic "snap-back" → project each \(\arg\max_v P_{i,j,v}\) to 1, others 0.
 
-Importantly, we need to be able to learn the regexes such that they minimize the median regex match distance. This requires that we either (1) directly tweek regexs based on the match errors (weighted by their softmax-weighted alignment) or (2) convert regexes into tensor representations and express regex matching in an fully differentiable operation.
+#### 2.5 Smooth Levenshtein distance alternative  
 
-For reference, we employ the following variables:
+Dynamic-time-warping recurrence
+\[
+\widetilde D_{i,j}=\operatorname{LSE}*\tau
+\begin{cases}
+\widetilde D*{i-1,j-1}+c_{\text{sub}},\\
+\widetilde D_{i-1,j  }+c_{\text{del}},\\
+\widetilde D_{i  ,j-1}+c_{\text{ins}},
+\end{cases}
+\]
+temperature \(\tau\) gives differentiability; back-prop updates literal embeddings of the regex bank rather than structure.
 
-- X = input
-- Y = output
-- L = length of input sequence
-- v_i \in V = alphabet, input vocabulary
-- N_v = |V| = input vocab size
-- r_i \in R = regexes
-- N_r = num regexes, output dims
+---
 
-#### 1. Directly tweeking regexes to minimze match error
+## CFG  — *Context-free priors*
 
-TODO
+Let  
+• non-terminals \(N=\{A_1,\dots,A_{N_{NT}}\}\), terminal set \(V\) as before.  
+We parameterise a **probabilistic CFG (PCFG)**.
 
-#### 2. Fully differentiable regex matching and optimization
+### 1. Rule tensors
 
-In this implementation, I convert regexes into a representation that can be modified directly by gradient descent. It works as follows:
+Terminal (unary) rules  
+\[
+R_1\in\mathbb R^{N_{NT}\times N_v},\qquad
+R_1[A,v]=\log P(A\to v).
+\]
 
-1. Convert the regex expression into an e-NFA
-2. Expand the e-NFA into a DFA = (Q, V, d, q0, F)
-3. Convert the DFA into a modified linear recurrent system where the state is represented by a one-hot encoding and the transition function is a transition matrix selected of |V| possible trnaisiton matrices depending on the input token:
-    1. Flatten the transition function d into a |V|x|Q|x|Q| tensor (|V| |Q|x|Q| matrices, one corresponding to the transition function for each possible input).
-    2. Init with a one-hot encoding of q0
-    3. Evaluate the DFA by one-hot encoding the vocab index of the input token and using that to select which transition matrix to apply.
-    4. Reduce sum along the 0th axis to get the final one-hot and dot-prod against the final state vector to check for acceptance.
+Binary rules  
+\[
+R_2\in\mathbb R^{N_{NT}\times N_{NT}\times N_{NT}},\qquad
+R_2[A,B,C]=\log P(A\to BC).
+\]
+Row-wise log-softmax ensures valid probabilities.
 
-Okay this is very expensive.
+### 2. Inside algorithm (tensor form)
 
-Now, perform the regex filter operation for each filter r_i \in R to get
+Create chart \(\alpha\in\mathbb R^{L\times L\times N_{NT}}\).
 
-Y = [regex(X, r_0); regex(X, r_1); ...; regex(X, r_n)]
+Initialisation (\(\ell=1\)):
+\[
+\alpha_{i,i+1,:}=R_1[:,x_i].
+\tag{5}
+\]
 
-Ofc, since we have converted the regex op into numerical form we can directly run Y=regex(X, [DFA_0; DFA_1; ...; DFA_n]).
+Recursion for span length \(\ell=2,\dots,L\):
+\[
+\alpha_{i,j,:}=
+\operatorname{LSE}*{k=i+1}^{j-1}
+\operatorname{LSE}*{B,C}
+\bigl(R_2[:,B,C]+\alpha_{i,k,B}+\alpha_{k,j,C}\bigr).
+\tag{6}
+\]
 
-### CFG
+Implementation sketch (PyTorch)
 
+```python
+for span in range(2, L+1):
+    left  = alpha[:, :L-span, :, None]          # (B, L-span, NT, 1)
+    right = alpha[:, span:, None, :]            # (B, L-span, 1, NT)
+    tmp   = left + right                       # broadcasting k dimension
+    score = tmp[None] + R2[:, None, None]      # add rule scores
+    alpha[:, :L-span, :] = logsumexp(score, dim=(0,3,4))
+```
 
+Complexity \(O(L^3N_{NT}^2)\) yet GPU-friendly; with \(N_{NT}\le 64\) and \(L\le 64\) parses in milliseconds.
+
+Sentence likelihood  
+\[
+\log p(X)=\alpha_{0,L,S},\quad S\text{ = start symbol}.
+\]
+
+### 3. Learning
+
+Losses  
+• *Unsupervised* = \(-\log p(X)\).  
+• *Supervised* (gold parse \(T^\star\))  
+  \[
+  \mathcal L=-\sum_{\text{rules }r\in T^\star}\log P(r).
+  \]
+Gradients flow through the inside chart; auto-diff reproduces inside–outside EM but allows mini-batch SGD.
+
+### 4. Deterministic LL(k) option
+
+LL(k) grammars can be encoded by a **differentiable push-down automaton (PDA)**:
+
+Stack representation \(S_t\in\mathbb R^{d_{\text{depth}}\times d_{\text{vec}}}\).  
+Controller RNN emits logits for *push*, *pop*, *replace*, relaxed via Gumbel-Softmax.  
+Predictive table \(\Pi\in\mathbb R^{N_{NT}\times N_v^{\,k}\times N_{\text{action}}}\) is learnable.  
+Hard stack behaviour can be recovered with straight-through estimation.
+
+### 5. Feature read-outs
+
+1. Root distribution \(\alpha_{0,L,:}\)  →  vector embedding.  
+2. Expected rule counts \(E[\text{freq}(A\!\to\!BC|X)]\) via automatic differentiation.  
+3. Viterbi tree (argmax in Eq. 6) → encode using tree-LSTM.
+
+---
 
 ## Generation
 
+For generation we invert the parsing layers:
+
+1. **Regex bank**: sample DFA paths with probability proportional to \(P^{(d)}\), convert to strings.  
+2. **PCFG**: ancestral sampling—top-down draw rules until only terminals remain.  
+3. Mix backbone (attention / RNN) logits with symbolic priors:  
+   \[
+   \log P_{\text{final}} = \lambda_{\text{sym}}\log P_{\text{PCFG}} + (1-\lambda_{\text{sym}})\log P_{\text{neural}}.
+   \]
+
+---
+
 ## Thought
+
+An explicit "thought vector'' can be the concatenation
+
+\[
+\text{Think}(X)=
+\bigl[
+\alpha_{0,L,:}\ ;\ Y_{\text{regex}}\ ;\ h_L^{\text{LSTM}}\ ;\ \text{CLS}^{\text{attention}}
+\bigr],
+\]
+feeding downstream reasoning modules (symbolic planner, theorem prover, etc.).
+
+---
 
 ## Interaction
